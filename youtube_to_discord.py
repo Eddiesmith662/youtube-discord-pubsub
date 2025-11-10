@@ -1,11 +1,18 @@
 from flask import Flask, request, abort
 import requests
 import os
+import threading
+import time
 import xml.etree.ElementTree as ET
 
 app = Flask(__name__)
 
 # === CONFIGURATION ===
+CHANNELS = [
+    "UCb9eK6mcBZmGPWl1UJ2wemA",
+    "UCme1x5ySvBB8lGYsHpR4b6Q",
+]
+
 WEBHOOK_MAP = {
     "GLOVE STATION": "https://discord.com/api/webhooks/1436874656224379033/_Nw5lGbnUD0xR8QmBxg5KrctPgKuIc1DU1fmVHcY-OXYloIbmDtC9LYeLTrje_IfSXim",
     "MK FIRE": "https://discord.com/api/webhooks/1436874897514303769/RD3TwnX2XJtOX-Qb20e6FDOdRhfBL8HPoqDMRF3rXyHQvyiqlE-brFhQJGYJrGBAW6UL",
@@ -16,19 +23,59 @@ WEBHOOK_MAP = {
     "GOAT TALK LIVE": "https://discord.com/api/webhooks/1437062385985650779/ORBmPYtKNvrwEa410L0LgF9QoE_gT-XoOJQ-kTuaEd4qxOefsofe1RfvqMCaj4Rpnupi"
 }
 
+CALLBACK_URL = os.getenv("PUBLIC_URL")  # e.g. https://youtube-discord-pubsub.onrender.com/youtube-webhook
+HUB_URL = "https://pubsubhubbub.appspot.com/subscribe"
+
+# === FUNCTIONS ===
+def subscribe_to_youtube():
+    """Subscribe to YouTube PubSubHubbub for all channels."""
+    for channel_id in CHANNELS:
+        topic_url = f"https://www.youtube.com/xml/feeds/videos.xml?channel_id={channel_id}"
+        print(f"📡 Subscribing to channel {channel_id}...")
+        try:
+            resp = requests.post(HUB_URL, data={
+                "hub.mode": "subscribe",
+                "hub.topic": topic_url,
+                "hub.callback": CALLBACK_URL,
+                "hub.verify": "async"
+            }, timeout=10)
+            if resp.status_code in [202, 204]:
+                print(f"✅ Subscription request accepted for {channel_id}")
+            else:
+                print(f"⚠️ Subscription error for {channel_id}: {resp.status_code}")
+        except Exception as e:
+            print(f"❌ Error subscribing to {channel_id}: {e}")
+
+
+def auto_renew_subscriptions():
+    """Automatically re-subscribe every 30 days."""
+    while True:
+        subscribe_to_youtube()
+        print("⏰ Next resubscription in 30 days...")
+        time.sleep(30 * 24 * 3600)
+
+
+@app.route("/")
+def health():
+    return "✅ VSPEED YouTube → Discord Bot Running"
+
+
+@app.route("/resubscribe")
+def resubscribe():
+    subscribe_to_youtube()
+    return "🔁 Resubscription triggered manually!", 200
+
 
 @app.route("/youtube-webhook", methods=["GET", "POST"])
 def youtube_webhook():
-    # 1️⃣ Subscription verification (YouTube hub check)
+    # Verification from YouTube
     if request.method == "GET":
-        mode = request.args.get("hub.mode")
         challenge = request.args.get("hub.challenge")
         topic = request.args.get("hub.topic")
-
-        print(f"✅ Verification request received: mode={mode}, topic={topic}")
+        print(f"✅ Verification request from {topic}")
         return challenge or "", 200
 
-    # 2️⃣ Notification from YouTube
+    # Notification from YouTube
     elif request.method == "POST":
         if not request.data:
             return "No data", 400
@@ -42,22 +89,26 @@ def youtube_webhook():
                 video_id = entry.find("atom:link", ns).attrib["href"].split("v=")[-1]
                 link = f"https://www.youtube.com/watch?v={video_id}"
 
-                # Match keyword → post to Discord
+                # Thumbnail (YouTube thumbnail URL pattern)
+                thumb = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+
                 title_upper = title.upper()
                 for keyword, webhook in WEBHOOK_MAP.items():
                     if keyword in title_upper:
                         print(f"🎯 New video detected: {title} → {keyword}")
-                        try:
-                            requests.post(webhook, json={
-                                "username": "VSPEED 🎬 Broadcast Link",
-                                "embeds": [{
-                                    "title": title,
-                                    "url": link,
-                                    "color": 0x1E90FF
-                                }]
-                            }, timeout=10)
-                        except Exception as e:
-                            print(f"⚠️ Failed to send Discord message: {e}")
+
+                        embed = {
+                            "title": title,
+                            "url": link,
+                            "color": 0x1E90FF,
+                            "image": {"url": thumb}
+                        }
+
+                        requests.post(webhook, json={
+                            "username": "VSPEED 🎬 Broadcast Link",
+                            "avatar_url": "https://www.svgrepo.com/show/355037/youtube.svg",
+                            "embeds": [embed]
+                        }, timeout=10)
 
             return "OK", 200
 
@@ -70,5 +121,6 @@ def youtube_webhook():
 
 
 if __name__ == "__main__":
+    threading.Thread(target=auto_renew_subscriptions, daemon=True).start()
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
