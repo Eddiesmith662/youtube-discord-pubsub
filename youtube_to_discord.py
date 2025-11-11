@@ -4,6 +4,7 @@ import os
 import threading
 import time
 import xml.etree.ElementTree as ET
+import json
 
 app = Flask(__name__)
 
@@ -26,7 +27,41 @@ WEBHOOK_MAP = {
 CALLBACK_URL = os.getenv("PUBLIC_URL")  # e.g. https://youtube-discord-pubsub.onrender.com/youtube-webhook
 HUB_URL = "https://pubsubhubbub.appspot.com/subscribe"
 
-# === FUNCTIONS ===
+# ✅ Persistent file path — stored on Render disk
+POSTED_FILE = "/data/posted_videos.json"
+MAX_FILE_SIZE_BYTES = 1_000_000  # ≈ 1 MB limit
+
+# === PERSISTENCE HELPERS ===
+def load_posted_videos():
+    """Load posted video IDs from persistent disk."""
+    if os.path.exists(POSTED_FILE):
+        with open(POSTED_FILE, "r") as f:
+            try:
+                return set(json.load(f))
+            except Exception:
+                print("⚠️ Error reading posted_videos.json — starting fresh.")
+                return set()
+    return set()
+
+def save_posted_videos():
+    """Save posted video IDs back to persistent disk, trimming if too large."""
+    if os.path.exists(POSTED_FILE):
+        size = os.path.getsize(POSTED_FILE)
+        if size > MAX_FILE_SIZE_BYTES:
+            print(f"⚠️ posted_videos.json exceeded {MAX_FILE_SIZE_BYTES} bytes, trimming older entries...")
+            trimmed = list(posted_videos)[-1000:]
+            with open(POSTED_FILE, "w") as f:
+                json.dump(trimmed, f)
+            return
+
+    with open(POSTED_FILE, "w") as f:
+        json.dump(list(posted_videos), f)
+
+# Load existing IDs at startup
+posted_videos = load_posted_videos()
+
+
+# === SUBSCRIPTION FUNCTIONS ===
 def subscribe_to_youtube():
     """Subscribe to YouTube PubSubHubbub for all channels."""
     for channel_id in CHANNELS:
@@ -55,6 +90,7 @@ def auto_renew_subscriptions():
         time.sleep(30 * 24 * 3600)
 
 
+# === FLASK ROUTES ===
 @app.route("/")
 def health():
     return "✅ VSPEED YouTube → Discord Bot Running"
@@ -68,14 +104,12 @@ def resubscribe():
 
 @app.route("/youtube-webhook", methods=["GET", "POST"])
 def youtube_webhook():
-    # Verification from YouTube
     if request.method == "GET":
         challenge = request.args.get("hub.challenge")
         topic = request.args.get("hub.topic")
         print(f"✅ Verification request from {topic}")
         return challenge or "", 200
 
-    # Notification from YouTube
     elif request.method == "POST":
         if not request.data:
             return "No data", 400
@@ -85,25 +119,30 @@ def youtube_webhook():
             ns = {"atom": "http://www.w3.org/2005/Atom"}
 
             for entry in root.findall("atom:entry", ns):
-                title = entry.find("atom:title", ns).text
                 video_id = entry.find("atom:link", ns).attrib["href"].split("v=")[-1]
+                title = entry.find("atom:title", ns).text
                 link = f"https://www.youtube.com/watch?v={video_id}"
-
-                # Thumbnail (YouTube thumbnail URL pattern)
                 thumb = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+
+                # 🚫 Skip if already posted
+                if video_id in posted_videos:
+                    print(f"⚠️ Skipping duplicate: {video_id}")
+                    continue
+
+                # ✅ Mark as posted
+                posted_videos.add(video_id)
+                save_posted_videos()
 
                 title_upper = title.upper()
                 for keyword, webhook in WEBHOOK_MAP.items():
                     if keyword in title_upper:
                         print(f"🎯 New video detected: {title} → {keyword}")
-
                         embed = {
                             "title": title,
                             "url": link,
                             "color": 0x1E90FF,
                             "image": {"url": thumb}
                         }
-
                         requests.post(webhook, json={
                             "username": "VSPEED 🎬 Broadcast Link",
                             "avatar_url": "https://www.svgrepo.com/show/355037/youtube.svg",
@@ -120,6 +159,7 @@ def youtube_webhook():
         abort(405)
 
 
+# === MAIN ENTRY POINT ===
 if __name__ == "__main__":
     threading.Thread(target=auto_renew_subscriptions, daemon=True).start()
     port = int(os.environ.get("PORT", 5000))
