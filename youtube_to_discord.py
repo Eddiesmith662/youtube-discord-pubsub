@@ -12,6 +12,7 @@ app = Flask(__name__)
 # === CONFIGURATION ===
 PUBLIC_URL = os.getenv("PUBLIC_URL")  # e.g. https://your-app.onrender.com/youtube-webhook
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN")  # Protects the admin panel
+CONTRIBUTOR_TOKEN = os.getenv("CONTRIBUTOR_TOKEN")  # Limited-access users
 HUB_URL = "https://pubsubhubbub.appspot.com/subscribe"
 DISK_DIR = "/data"
 os.makedirs(DISK_DIR, exist_ok=True)
@@ -84,6 +85,16 @@ def require_auth(f):
         return f(*args, **kwargs)
     return wrapped
 
+def require_contributor(f):
+    @wraps(f)
+    def wrapped(*args, **kwargs):
+        token = request.args.get("token") or request.headers.get("X-Contrib-Token")
+        valid_tokens = [ADMIN_TOKEN, CONTRIBUTOR_TOKEN]
+        if not token or token not in valid_tokens:
+            return Response("Unauthorized", 401)
+        return f(*args, **kwargs)
+    return wrapped
+
 # === YOUTUBE SUBSCRIPTION ===
 def subscribe_to_youtube():
     """Subscribes all channels to YouTube PubSubHubBub."""
@@ -129,7 +140,6 @@ input{padding:6px;width:90%;}
 </style></head><body>
 <h1>VSPEED Admin</h1>
 <p><b>Callback:</b> {{ public_url or 'NOT SET' }} | <b>Videos cached:</b> {{ posted_count }}</p>
-
 <form method="POST" action="{{ url_for('resubscribe') }}?token={{ token }}">
 <button class="btn btn-primary" type="submit">🔁 Resubscribe Now</button>
 </form>
@@ -224,6 +234,49 @@ def clear_cache():
 def resubscribe():
     threading.Thread(target=subscribe_to_youtube, daemon=True).start()
     return redirect(url_for("admin_panel", token=request.args.get("token")))
+
+# === CONTRIBUTOR PANEL ===
+CONTRIB_HTML = """<!doctype html>
+<html><head><title>VSPEED Contributor</title>
+<style>
+body{font-family:sans-serif;margin:20px;}
+table{border-collapse:collapse;width:100%;margin-top:10px;}
+th,td{border:1px solid #ccc;padding:8px;}
+th{background:#f7f7f7;}
+input{padding:6px;width:90%;}
+.btn{padding:6px 12px;margin:4px;cursor:pointer;}
+.btn-add{background:#e0fbe0;}
+</style></head><body>
+<h1>VSPEED Contributor Panel</h1>
+<p>You can add new keyword → webhook pairs here. Existing ones cannot be changed or deleted.</p>
+<form method="POST" action="{{ url_for('add_mapping_contrib') }}?token={{ token }}">
+<input name="keyword" placeholder="Keyword" required>
+<input name="webhook" placeholder="Discord Webhook URL" required>
+<button class="btn btn-add">Add</button></form>
+<table><tr><th>Keyword</th><th>Webhook</th></tr>
+{% for k,v in webhooks.items() %}
+<tr><td>{{ k }}</td><td>{{ v }}</td></tr>
+{% endfor %}</table>
+</body></html>"""
+
+@app.route("/contributor")
+@require_contributor
+def contributor_panel():
+    return render_template_string(
+        CONTRIB_HTML,
+        webhooks=WEBHOOK_MAP,
+        token=request.args.get("token")
+    )
+
+@app.route("/contributor/add-mapping", methods=["POST"])
+@require_contributor
+def add_mapping_contrib():
+    k = request.form.get("keyword").strip().upper()
+    v = request.form.get("webhook").strip()
+    if k and v and k not in WEBHOOK_MAP:
+        WEBHOOK_MAP[k] = v
+        save_json(WEBHOOKS_FILE, WEBHOOK_MAP)
+    return redirect(url_for("contributor_panel", token=request.args.get("token")))
 
 # === PUBLIC ROUTES ===
 @app.route("/")
