@@ -296,13 +296,18 @@ def youtube_webhook():
             root = ET.fromstring(request.data)
             ns = {"atom": "http://www.w3.org/2005/Atom"}
             for entry in root.findall("atom:entry", ns):
-                link = entry.find("atom:link", ns).attrib.get("href", "")
-                if "v=" not in link:
-                    continue
-                video_id = link.split("v=")[-1]
-                title = entry.find("atom:title", ns).text or "New Video"
-                url = f"https://www.youtube.com/watch?v={video_id}"
-                thumb = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+    # --- Extract video info safely ---
+    vid_el = entry.find("{http://www.youtube.com/xml/schemas/2015}videoId")
+    title_el = entry.find("atom:title", ns)
+
+    if vid_el is None:
+        continue
+
+    video_id = vid_el.text
+    title = title_el.text if title_el is not None else "New Video"
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    thumb = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+
                 if video_id in posted_videos:
                     continue
                 posted_videos.add(video_id)
