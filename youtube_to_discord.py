@@ -9,7 +9,7 @@ import json
 app = Flask(__name__)
 
 # === CONFIGURATION ===
-PUBLIC_URL = os.getenv("PUBLIC_URL")  # e.g. https://your-app.onrender.com/youtube-webhook
+PUBLIC_URL = os.getenv("PUBLIC_URL")  # e.g. https://your-app.onrender.com
 HUB_URL = "https://pubsubhubbub.appspot.com/subscribe"
 DISK_DIR = "/data"
 os.makedirs(DISK_DIR, exist_ok=True)
@@ -44,6 +44,7 @@ def load_posted_videos():
     return set()
 
 def save_posted_videos():
+    """Save posted videos, trimming old ones if the file gets too large."""
     if os.path.exists(POSTED_FILE) and os.path.getsize(POSTED_FILE) > MAX_FILE_SIZE_BYTES:
         trimmed = list(posted_videos)[-1000:]
         with open(POSTED_FILE, "w") as f:
@@ -53,6 +54,42 @@ def save_posted_videos():
             json.dump(list(posted_videos), f)
 
 posted_videos = load_posted_videos()
+
+# === RATE-LIMIT SAFE DISCORD POST ===
+def safe_post_to_discord(webhook, payload, keyword):
+    """Send a message to Discord while respecting rate limits."""
+    try:
+        response = requests.post(webhook, json=payload, timeout=10)
+
+        # ✅ Success
+        if response.status_code == 204:
+            print(f"✅ Sent to Discord: {keyword}")
+            return
+
+        # 🚫 Rate limited
+        if response.status_code == 429:
+            retry_after = response.headers.get("Retry-After", "2")
+            print(f"⏳ Rate limited for {keyword}. Retrying in {retry_after}s...")
+            try:
+                time.sleep(float(retry_after))
+            except ValueError:
+                time.sleep(2)
+            retry_response = requests.post(webhook, json=payload, timeout=10)
+            if retry_response.status_code == 204:
+                print(f"✅ Retried successfully for {keyword}")
+            else:
+                print(f"⚠️ Retry failed ({retry_response.status_code}) for {keyword}")
+            return
+
+        # ❌ Webhook deleted
+        if response.status_code == 404:
+            print(f"❌ Webhook invalid or deleted for {keyword} (404)")
+            return
+
+        print(f"⚠️ Discord returned {response.status_code}: {response.text[:80]}")
+
+    except Exception as e:
+        print(f"💥 Error posting to Discord ({keyword}): {e}")
 
 # === YOUTUBE SUBSCRIPTION ===
 def subscribe_to_youtube():
@@ -83,30 +120,29 @@ def auto_renew_subscriptions():
         print("⏰ Next resubscription in 30 days...")
         time.sleep(30 * 24 * 3600)
 
-# === WEBHOOK HANDLER ===
+# === FLASK ROUTES ===
 @app.route("/")
 def health():
     return "✅ VSPEED YouTube → Discord (PubSubHubbub) Running"
 
 @app.route("/youtube-webhook", methods=["GET", "POST"])
 def youtube_webhook():
-    # Verify callback from YouTube
     if request.method == "GET":
         challenge = request.args.get("hub.challenge")
         print(f"🔗 Verification challenge: {challenge}")
         return Response(challenge, 200)
 
-    # Handle new video notifications
     elif request.method == "POST":
         if not request.data:
             return "No data", 400
 
         try:
+            print("📨 Incoming YouTube notification...")
             root = ET.fromstring(request.data)
-            ns = {"atom": "http://www.w3.org/2005/Atom"}
+            ns = {"atom": "http://www.w3.org/2005/Atom", "yt": "http://www.youtube.com/xml/schemas/2015"}
+
             for entry in root.findall("atom:entry", ns):
-                # Extract video ID
-                video_id_tag = entry.find("yt:videoId", {"yt": "http://www.youtube.com/xml/schemas/2015"})
+                video_id_tag = entry.find("yt:videoId", ns)
                 if video_id_tag is None:
                     continue
                 video_id = video_id_tag.text.strip()
@@ -122,8 +158,8 @@ def youtube_webhook():
 
                 posted_videos.add(video_id)
                 save_posted_videos()
+                print(f"🎥 New video detected: {title}")
 
-                print(f"🎥 New video: {title}")
                 for keyword, webhook in WEBHOOK_MAP.items():
                     if keyword in title.upper():
                         embed = {
@@ -132,21 +168,23 @@ def youtube_webhook():
                             "color": 0x1E90FF,
                             "image": {"url": thumb}
                         }
-                        requests.post(webhook, json={
+                        payload = {
                             "username": "VSPEED 🎬 Broadcast Link",
                             "avatar_url": "https://www.svgrepo.com/show/355037/youtube.svg",
                             "embeds": [embed]
-                        }, timeout=10)
-                        print(f"📢 Sent to Discord: {keyword}")
+                        }
+                        safe_post_to_discord(webhook, payload, keyword)
+                        time.sleep(1)
+
             return "OK", 200
 
         except Exception as e:
             print(f"⚠️ Error parsing notification: {e}")
             return "Error", 500
-        
+
 @app.route("/test-discord")
 def test_discord():
-    """Test all stored Discord webhooks for validity."""
+    """Test all stored Discord webhooks for validity while respecting rate limits."""
     results = []
     for keyword, webhook in WEBHOOK_MAP.items():
         try:
@@ -158,11 +196,20 @@ def test_discord():
                 results.append(f"✅ {keyword}: OK")
             elif response.status_code == 404:
                 results.append(f"❌ {keyword}: Invalid or deleted (404 Unknown Webhook)")
+            elif response.status_code == 429:
+                retry_after = response.headers.get("Retry-After", "2")
+                results.append(f"⏳ {keyword}: Rate limited — retry after {retry_after}s")
+                try:
+                    time.sleep(float(retry_after))
+                except ValueError:
+                    time.sleep(2)
             else:
-                results.append(f"⚠️ {keyword}: Unexpected status {response.status_code} ({response.text[:80]})")
+                results.append(f"⚠️ {keyword}: Unexpected {response.status_code} ({response.text[:80]})")
 
         except Exception as e:
             results.append(f"💥 {keyword}: Error - {e}")
+
+        time.sleep(1)
 
     print("\n".join(results))
     return "<br>".join(results), 200
