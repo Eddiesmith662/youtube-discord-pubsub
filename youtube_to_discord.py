@@ -97,7 +97,6 @@ def require_contributor(f):
 
 # === YOUTUBE SUBSCRIPTION ===
 def subscribe_to_youtube():
-    """Subscribes all channels to YouTube PubSubHubBub."""
     if not PUBLIC_URL:
         print("❌ PUBLIC_URL not set — cannot subscribe.")
         return
@@ -143,7 +142,6 @@ input{padding:6px;width:90%;}
 <form method="POST" action="{{ url_for('resubscribe') }}?token={{ token }}">
 <button class="btn btn-primary" type="submit">🔁 Resubscribe Now</button>
 </form>
-
 <h2>Channels</h2>
 <form method="POST" action="{{ url_for('add_channel') }}?token={{ token }}">
 <input name="channel_id" placeholder="Channel ID" required>
@@ -155,7 +153,6 @@ input{padding:6px;width:90%;}
 <input type="hidden" name="channel_id" value="{{ c }}">
 <button class="btn btn-danger">Delete</button></form></td></tr>
 {% endfor %}</table>
-
 <h2>Keyword → Webhook</h2>
 <form method="POST" action="{{ url_for('add_mapping') }}?token={{ token }}">
 <input name="keyword" placeholder="Keyword" required>
@@ -168,7 +165,6 @@ input{padding:6px;width:90%;}
 <input type="hidden" name="keyword" value="{{ k }}">
 <button class="btn btn-danger">Delete</button></form></td></tr>
 {% endfor %}</table>
-
 <form method="POST" action="{{ url_for('clear_cache') }}?token={{ token }}">
 <button class="btn btn-danger">🧹 Clear Cache</button></form>
 </body></html>"""
@@ -184,56 +180,6 @@ def admin_panel():
         token=request.args.get("token"),
         public_url=PUBLIC_URL
     )
-
-@app.route("/admin/add-channel", methods=["POST"])
-@require_auth
-def add_channel():
-    ch = request.form.get("channel_id").strip()
-    if ch and ch not in CHANNELS:
-        CHANNELS.append(ch)
-        save_json(CHANNELS_FILE, CHANNELS)
-    return redirect(url_for("admin_panel", token=request.args.get("token")))
-
-@app.route("/admin/delete-channel", methods=["POST"])
-@require_auth
-def delete_channel():
-    ch = request.form.get("channel_id").strip()
-    if ch in CHANNELS:
-        CHANNELS.remove(ch)
-        save_json(CHANNELS_FILE, CHANNELS)
-    return redirect(url_for("admin_panel", token=request.args.get("token")))
-
-@app.route("/admin/add-mapping", methods=["POST"])
-@require_auth
-def add_mapping():
-    k = request.form.get("keyword").strip().upper()
-    v = request.form.get("webhook").strip()
-    if k and v:
-        WEBHOOK_MAP[k] = v
-        save_json(WEBHOOKS_FILE, WEBHOOK_MAP)
-    return redirect(url_for("admin_panel", token=request.args.get("token")))
-
-@app.route("/admin/delete-mapping", methods=["POST"])
-@require_auth
-def delete_mapping():
-    k = request.form.get("keyword").strip().upper()
-    if k in WEBHOOK_MAP:
-        del WEBHOOK_MAP[k]
-        save_json(WEBHOOKS_FILE, WEBHOOK_MAP)
-    return redirect(url_for("admin_panel", token=request.args.get("token")))
-
-@app.route("/admin/clear-cache", methods=["POST"])
-@require_auth
-def clear_cache():
-    posted_videos.clear()
-    save_posted_videos()
-    return redirect(url_for("admin_panel", token=request.args.get("token")))
-
-@app.route("/admin/resubscribe", methods=["POST"])
-@require_auth
-def resubscribe():
-    threading.Thread(target=subscribe_to_youtube, daemon=True).start()
-    return redirect(url_for("admin_panel", token=request.args.get("token")))
 
 # === CONTRIBUTOR PANEL ===
 CONTRIB_HTML = """<!doctype html>
@@ -292,34 +238,40 @@ def youtube_webhook():
             return "No data", 400
         try:
             print("📨 Incoming YouTube notification:")
-            print(request.data.decode("utf-8"))
-            root = ET.fromstring(request.data)
+            xml_data = request.data.decode("utf-8")
+            print(xml_data)
+
+            root = ET.fromstring(xml_data)
             ns = {"atom": "http://www.w3.org/2005/Atom"}
+
             for entry in root.findall("atom:entry", ns):
-    # --- Extract video info safely ---
-    vid_el = entry.find("{http://www.youtube.com/xml/schemas/2015}videoId")
-    title_el = entry.find("atom:title", ns)
+                vid_el = entry.find("{http://www.youtube.com/xml/schemas/2015}videoId")
+                title_el = entry.find("atom:title", ns)
+                if vid_el is None:
+                    continue
 
-    if vid_el is None:
-        continue
-
-    video_id = vid_el.text
-    title = title_el.text if title_el is not None else "New Video"
-    url = f"https://www.youtube.com/watch?v={video_id}"
-    thumb = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+                video_id = vid_el.text
+                title = title_el.text if title_el is not None else "New Video"
+                url = f"https://www.youtube.com/watch?v={video_id}"
+                thumb = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+                print(f"🆕 Detected video: {title} ({video_id})")
 
                 if video_id in posted_videos:
                     continue
+
                 posted_videos.add(video_id)
                 save_posted_videos()
+
                 for keyword, webhook in WEBHOOK_MAP.items():
                     if keyword in title.upper():
                         embed = {"title": title, "url": url, "color": 0x1E90FF, "image": {"url": thumb}}
-                        requests.post(webhook, json={
+                        res = requests.post(webhook, json={
                             "username": "VSPEED 🎬 Broadcast Link",
                             "avatar_url": "https://www.svgrepo.com/show/355037/youtube.svg",
                             "embeds": [embed]
                         }, timeout=10)
+                        print(f"📤 Posted {title} → Discord ({res.status_code})")
+
             return "OK", 200
         except Exception as e:
             print(f"⚠️ Error parsing XML: {e}")
