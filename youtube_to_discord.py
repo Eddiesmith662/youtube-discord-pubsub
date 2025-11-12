@@ -143,6 +143,30 @@ def youtube_webhook():
         except Exception as e:
             print(f"⚠️ Error parsing notification: {e}")
             return "Error", 500
+        
+@app.route("/test-discord")
+def test_discord():
+    """Test all stored Discord webhooks for validity."""
+    results = []
+    for keyword, webhook in WEBHOOK_MAP.items():
+        try:
+            response = requests.post(webhook, json={
+                "content": f"🧪 Test message from VSPEED for **{keyword}** webhook."
+            }, timeout=10)
+
+            if response.status_code == 204:
+                results.append(f"✅ {keyword}: OK")
+            elif response.status_code == 404:
+                results.append(f"❌ {keyword}: Invalid or deleted (404 Unknown Webhook)")
+            else:
+                results.append(f"⚠️ {keyword}: Unexpected status {response.status_code} ({response.text[:80]})")
+
+        except Exception as e:
+            results.append(f"💥 {keyword}: Error - {e}")
+
+    print("\n".join(results))
+    return "<br>".join(results), 200
+
 
 # === ENTRY POINT ===
 if __name__ == "__main__":
