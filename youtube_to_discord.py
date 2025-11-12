@@ -291,6 +291,8 @@ def youtube_webhook():
         if not request.data:
             return "No data", 400
         try:
+            print("📨 Incoming YouTube notification:")
+            print(request.data.decode("utf-8"))
             root = ET.fromstring(request.data)
             ns = {"atom": "http://www.w3.org/2005/Atom"}
             for entry in root.findall("atom:entry", ns):
