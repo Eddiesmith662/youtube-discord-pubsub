@@ -139,12 +139,17 @@ def youtube_webhook():
         try:
             root = ET.fromstring(request.data)
             ns = {"atom": "http://www.w3.org/2005/Atom"}
+
             for entry in root.findall("atom:entry", ns):
                 link = entry.find("atom:link", ns).attrib.get("href", "")
+                title = entry.find("atom:title", ns).text or "New Video"
+
+                # 🟡 Step 1: Debug log to confirm what YouTube sent
+                print(f"📨 Incoming YouTube notification: {title} ({link})")
+
                 if "v=" not in link:
                     continue
                 video_id = link.split("v=")[-1]
-                title = entry.find("atom:title", ns).text or "New Video"
                 url = f"https://www.youtube.com/watch?v={video_id}"
                 thumb = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
 
@@ -167,7 +172,6 @@ def youtube_webhook():
                             "embeds": [embed]
                         }, timeout=10)
 
-                        # ✅ Verify Discord response
                         if r.status_code in [200, 204]:
                             print(f"✅ Posted '{title}' → {keyword}")
                         else:
