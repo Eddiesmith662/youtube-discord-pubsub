@@ -5,6 +5,7 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 import json
+from datetime import datetime
 
 app = Flask(__name__)
 
@@ -17,11 +18,13 @@ os.makedirs(DISK_DIR, exist_ok=True)
 POSTED_FILE = os.path.join(DISK_DIR, "posted_videos.json")
 MAX_FILE_SIZE_BYTES = 1_000_000  # 1MB
 
+# Channels to monitor
 CHANNELS = [
     "UCb9eK6mcBZmGPWl1UJ2wemA",
     "UCme1x5ySvBB8lGYsHpR4b6Q",
 ]
 
+# Keywords → Discord webhooks
 WEBHOOK_MAP = {
     "GLOVE STATION": "https://discord.com/api/webhooks/1436874656224379033/_Nw5lGbnUD0xR8QmBxg5KrctPgKuIc1DU1fmVHcY-OXYloIbmDtC9LYeLTrje_IfSXim",
     "MK FIRE": "https://discord.com/api/webhooks/1436874897514303769/RD3TwnX2XJtOX-Qb20e6FDOdRhfBL8HPoqDMRF3rXyHQvyiqlE-brFhQJGYJrGBAW6UL",
@@ -55,18 +58,18 @@ def save_posted_videos():
 
 posted_videos = load_posted_videos()
 
-# === RATE-LIMIT SAFE DISCORD POST ===
+# === SAFE DISCORD POSTING ===
 def safe_post_to_discord(webhook, payload, keyword):
     """Send a message to Discord while respecting rate limits."""
     try:
         response = requests.post(webhook, json=payload, timeout=10)
 
-        # ✅ Success
-        if response.status_code == 204:
-            print(f"✅ Sent to Discord: {keyword}")
+        # Normal success
+        if response.status_code in (200, 204):
+            print(f"✅ [{datetime.utcnow()}] Sent to Discord: {keyword}")
             return
 
-        # 🚫 Rate limited
+        # Handle rate limiting
         if response.status_code == 429:
             retry_after = response.headers.get("Retry-After", "2")
             print(f"⏳ Rate limited for {keyword}. Retrying in {retry_after}s...")
@@ -74,28 +77,25 @@ def safe_post_to_discord(webhook, payload, keyword):
                 time.sleep(float(retry_after))
             except ValueError:
                 time.sleep(2)
-            retry_response = requests.post(webhook, json=payload, timeout=10)
-            if retry_response.status_code == 204:
-                print(f"✅ Retried successfully for {keyword}")
-            else:
-                print(f"⚠️ Retry failed ({retry_response.status_code}) for {keyword}")
+            requests.post(webhook, json=payload, timeout=10)
             return
 
-        # ❌ Webhook deleted
         if response.status_code == 404:
-            print(f"❌ Webhook invalid or deleted for {keyword} (404)")
+            print(f"❌ [{datetime.utcnow()}] Webhook deleted or invalid for {keyword}")
             return
 
-        print(f"⚠️ Discord returned {response.status_code}: {response.text[:80]}")
+        print(f"⚠️ [{datetime.utcnow()}] Discord returned {response.status_code}: {response.text[:80]}")
 
     except Exception as e:
         print(f"💥 Error posting to Discord ({keyword}): {e}")
 
 # === YOUTUBE SUBSCRIPTION ===
 def subscribe_to_youtube():
+    """Subscribe to all YouTube channels using PubSubHubbub."""
     if not PUBLIC_URL:
         print("❌ PUBLIC_URL not set — cannot subscribe.")
         return
+
     callback = f"{PUBLIC_URL}/youtube-webhook"
     for ch in CHANNELS:
         topic = f"https://www.youtube.com/xml/feeds/videos.xml?channel_id={ch}"
@@ -115,51 +115,57 @@ def subscribe_to_youtube():
             print(f"❌ Error subscribing {ch}: {e}")
 
 def auto_renew_subscriptions():
+    """Re-subscribe every 30 days."""
     while True:
         subscribe_to_youtube()
-        print("⏰ Next resubscription in 30 days...")
+        print("⏰ Next re-subscription in 30 days...")
         time.sleep(30 * 24 * 3600)
 
 # === FLASK ROUTES ===
 @app.route("/")
 def health():
-    return "✅ VSPEED YouTube → Discord (PubSubHubbub) Running"
+    return "✅ VSPEED YouTube → Discord Running (Scheduled Stream Mode)"
 
 @app.route("/youtube-webhook", methods=["GET", "POST"])
 def youtube_webhook():
+    # Verification handshake from YouTube
     if request.method == "GET":
-        challenge = request.args.get("hub.challenge")
-        print(f"🔗 Verification challenge: {challenge}")
+        challenge = request.args.get("hub.challenge", "")
+        print(f"🔗 YouTube verification: {challenge}")
         return Response(challenge, 200)
 
+    # Notification from YouTube
     elif request.method == "POST":
         if not request.data:
             return "No data", 400
-
         try:
-            print("📨 Incoming YouTube notification...")
             root = ET.fromstring(request.data)
-            ns = {"atom": "http://www.w3.org/2005/Atom", "yt": "http://www.youtube.com/xml/schemas/2015"}
+            ns = {
+                "atom": "http://www.w3.org/2005/Atom",
+                "yt": "http://www.youtube.com/xml/schemas/2015"
+            }
 
             for entry in root.findall("atom:entry", ns):
                 video_id_tag = entry.find("yt:videoId", ns)
                 if video_id_tag is None:
                     continue
-                video_id = video_id_tag.text.strip()
 
+                video_id = video_id_tag.text.strip()
                 title_tag = entry.find("atom:title", ns)
-                title = title_tag.text if title_tag is not None else "New Video"
+                title = title_tag.text if title_tag is not None else "Untitled Stream"
                 url = f"https://www.youtube.com/watch?v={video_id}"
                 thumb = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
 
+                # Skip if already posted
                 if video_id in posted_videos:
-                    print(f"⏩ Already posted: {title}")
                     continue
 
                 posted_videos.add(video_id)
                 save_posted_videos()
-                print(f"🎥 New video detected: {title}")
 
+                print(f"🎥 [{datetime.utcnow()}] Scheduled stream detected: {title}")
+
+                # Match keywords to webhooks
                 for keyword, webhook in WEBHOOK_MAP.items():
                     if keyword in title.upper():
                         embed = {
@@ -182,40 +188,9 @@ def youtube_webhook():
             print(f"⚠️ Error parsing notification: {e}")
             return "Error", 500
 
-@app.route("/test-discord")
-def test_discord():
-    """Test all stored Discord webhooks for validity while respecting rate limits."""
-    results = []
-    for keyword, webhook in WEBHOOK_MAP.items():
-        try:
-            response = requests.post(webhook, json={
-                "content": f"🧪 Test message from VSPEED for **{keyword}** webhook."
-            }, timeout=10)
-
-            if response.status_code == 204:
-                results.append(f"✅ {keyword}: OK")
-            elif response.status_code == 404:
-                results.append(f"❌ {keyword}: Invalid or deleted (404 Unknown Webhook)")
-            elif response.status_code == 429:
-                retry_after = response.headers.get("Retry-After", "2")
-                results.append(f"⏳ {keyword}: Rate limited — retry after {retry_after}s")
-                try:
-                    time.sleep(float(retry_after))
-                except ValueError:
-                    time.sleep(2)
-            else:
-                results.append(f"⚠️ {keyword}: Unexpected {response.status_code} ({response.text[:80]})")
-
-        except Exception as e:
-            results.append(f"💥 {keyword}: Error - {e}")
-
-        time.sleep(1)
-
-    print("\n".join(results))
-    return "<br>".join(results), 200
-
-
 # === ENTRY POINT ===
 if __name__ == "__main__":
     threading.Thread(target=auto_renew_subscriptions, daemon=True).start()
+    # Force unbuffered output so logs appear live in Render
+    os.environ["PYTHONUNBUFFERED"] = "1"
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
