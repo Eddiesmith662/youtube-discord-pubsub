@@ -124,160 +124,6 @@ def auto_renew_subscriptions():
         print("⏰ Next resubscription in 30 days...")
         time.sleep(30 * 24 * 3600)
 
-# === ADMIN PANEL ===
-ADMIN_HTML = """<!doctype html>
-<html><head><title>VSPEED Admin</title>
-<style>
-body{font-family:sans-serif;margin:20px;}
-table{border-collapse:collapse;width:100%;margin-top:10px;}
-th,td{border:1px solid #ccc;padding:8px;}
-th{background:#f7f7f7;}
-input{padding:6px;width:90%;}
-.btn{padding:6px 12px;margin:4px;cursor:pointer;}
-.btn-add{background:#e0fbe0;}
-.btn-danger{background:#ffe0e0;}
-.btn-primary{background:#d0e0ff;}
-</style></head><body>
-<h1>VSPEED Admin</h1>
-<p><b>Callback:</b> {{ public_url or 'NOT SET' }} | <b>Videos cached:</b> {{ posted_count }}</p>
-<form method="POST" action="{{ url_for('resubscribe') }}?token={{ token }}">
-<button class="btn btn-primary" type="submit">🔁 Resubscribe Now</button>
-</form>
-
-<h2>Channels</h2>
-<form method="POST" action="{{ url_for('add_channel') }}?token={{ token }}">
-<input name="channel_id" placeholder="Channel ID" required>
-<button class="btn btn-add">Add</button></form>
-<table><tr><th>Channel</th><th></th></tr>
-{% for c in channels %}
-<tr><td>{{ c }}</td><td>
-<form method="POST" action="{{ url_for('delete_channel') }}?token={{ token }}">
-<input type="hidden" name="channel_id" value="{{ c }}">
-<button class="btn btn-danger">Delete</button></form></td></tr>
-{% endfor %}</table>
-
-<h2>Keyword → Webhook</h2>
-<form method="POST" action="{{ url_for('add_mapping') }}?token={{ token }}">
-<input name="keyword" placeholder="Keyword" required>
-<input name="webhook" placeholder="Discord Webhook URL" required>
-<button class="btn btn-add">Add</button></form>
-<table><tr><th>Keyword</th><th>Webhook</th><th></th></tr>
-{% for k,v in webhooks.items() %}
-<tr><td>{{ k }}</td><td>{{ v }}</td><td>
-<form method="POST" action="{{ url_for('delete_mapping') }}?token={{ token }}">
-<input type="hidden" name="keyword" value="{{ k }}">
-<button class="btn btn-danger">Delete</button></form></td></tr>
-{% endfor %}</table>
-
-<form method="POST" action="{{ url_for('clear_cache') }}?token={{ token }}">
-<button class="btn btn-danger">🧹 Clear Cache</button></form>
-</body></html>"""
-
-@app.route("/admin")
-@require_auth
-def admin_panel():
-    return render_template_string(
-        ADMIN_HTML,
-        channels=CHANNELS,
-        webhooks=WEBHOOK_MAP,
-        posted_count=len(posted_videos),
-        token=request.args.get("token"),
-        public_url=PUBLIC_URL
-    )
-
-@app.route("/admin/add-channel", methods=["POST"])
-@require_auth
-def add_channel():
-    ch = request.form.get("channel_id").strip()
-    if ch and ch not in CHANNELS:
-        CHANNELS.append(ch)
-        save_json(CHANNELS_FILE, CHANNELS)
-    return redirect(url_for("admin_panel", token=request.args.get("token")))
-
-@app.route("/admin/delete-channel", methods=["POST"])
-@require_auth
-def delete_channel():
-    ch = request.form.get("channel_id").strip()
-    if ch in CHANNELS:
-        CHANNELS.remove(ch)
-        save_json(CHANNELS_FILE, CHANNELS)
-    return redirect(url_for("admin_panel", token=request.args.get("token")))
-
-@app.route("/admin/add-mapping", methods=["POST"])
-@require_auth
-def add_mapping():
-    k = request.form.get("keyword").strip().upper()
-    v = request.form.get("webhook").strip()
-    if k and v:
-        WEBHOOK_MAP[k] = v
-        save_json(WEBHOOKS_FILE, WEBHOOK_MAP)
-    return redirect(url_for("admin_panel", token=request.args.get("token")))
-
-@app.route("/admin/delete-mapping", methods=["POST"])
-@require_auth
-def delete_mapping():
-    k = request.form.get("keyword").strip().upper()
-    if k in WEBHOOK_MAP:
-        del WEBHOOK_MAP[k]
-        save_json(WEBHOOKS_FILE, WEBHOOK_MAP)
-    return redirect(url_for("admin_panel", token=request.args.get("token")))
-
-@app.route("/admin/clear-cache", methods=["POST"])
-@require_auth
-def clear_cache():
-    posted_videos.clear()
-    save_posted_videos()
-    return redirect(url_for("admin_panel", token=request.args.get("token")))
-
-@app.route("/admin/resubscribe", methods=["POST"])
-@require_auth
-def resubscribe():
-    threading.Thread(target=subscribe_to_youtube, daemon=True).start()
-    return redirect(url_for("admin_panel", token=request.args.get("token")))
-
-# === CONTRIBUTOR PANEL ===
-CONTRIB_HTML = """<!doctype html>
-<html><head><title>VSPEED Contributor</title>
-<style>
-body{font-family:sans-serif;margin:20px;}
-table{border-collapse:collapse;width:100%;margin-top:10px;}
-th,td{border:1px solid #ccc;padding:8px;}
-th{background:#f7f7f7;}
-input{padding:6px;width:90%;}
-.btn{padding:6px 12px;margin:4px;cursor:pointer;}
-.btn-add{background:#e0fbe0;}
-</style></head><body>
-<h1>VSPEED Contributor Panel</h1>
-<p>You can add new keyword → webhook pairs here. Existing ones cannot be changed or deleted.</p>
-<form method="POST" action="{{ url_for('add_mapping_contrib') }}?token={{ token }}">
-<input name="keyword" placeholder="Keyword" required>
-<input name="webhook" placeholder="Discord Webhook URL" required>
-<button class="btn btn-add">Add</button></form>
-<table><tr><th>Keyword</th><th>Webhook</th></tr>
-{% for k,v in webhooks.items() %}
-<tr><td>{{ k }}</td><td>{{ v }}</td></tr>
-{% endfor %}</table>
-</body></html>"""
-
-@app.route("/contributor")
-@require_contributor
-def contributor_panel():
-    return render_template_string(
-        CONTRIB_HTML,
-        webhooks=WEBHOOK_MAP,
-        token=request.args.get("token")
-    )
-
-@app.route("/contributor/add-mapping", methods=["POST"])
-@require_contributor
-def add_mapping_contrib():
-    k = request.form.get("keyword").strip().upper()
-    v = request.form.get("webhook").strip()
-    if k and v and k not in WEBHOOK_MAP:
-        WEBHOOK_MAP[k] = v
-        save_json(WEBHOOKS_FILE, WEBHOOK_MAP)
-    return redirect(url_for("contributor_panel", token=request.args.get("token")))
-
 # === PUBLIC ROUTES ===
 @app.route("/")
 def health():
@@ -301,18 +147,32 @@ def youtube_webhook():
                 title = entry.find("atom:title", ns).text or "New Video"
                 url = f"https://www.youtube.com/watch?v={video_id}"
                 thumb = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+
                 if video_id in posted_videos:
                     continue
                 posted_videos.add(video_id)
                 save_posted_videos()
+
                 for keyword, webhook in WEBHOOK_MAP.items():
                     if keyword in title.upper():
-                        embed = {"title": title, "url": url, "color": 0x1E90FF, "image": {"url": thumb}}
-                        requests.post(webhook, json={
+                        embed = {
+                            "title": title,
+                            "url": url,
+                            "color": 0x1E90FF,
+                            "image": {"url": thumb}
+                        }
+                        r = requests.post(webhook, json={
                             "username": "VSPEED 🎬 Broadcast Link",
                             "avatar_url": "https://www.svgrepo.com/show/355037/youtube.svg",
                             "embeds": [embed]
                         }, timeout=10)
+
+                        # ✅ Verify Discord response
+                        if r.status_code in [200, 204]:
+                            print(f"✅ Posted '{title}' → {keyword}")
+                        else:
+                            print(f"⚠️ Discord post failed ({r.status_code}): {r.text[:200]}")
+
             return "OK", 200
         except Exception as e:
             print(f"⚠️ Error parsing XML: {e}")
