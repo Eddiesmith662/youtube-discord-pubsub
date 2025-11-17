@@ -58,16 +58,17 @@ def save_posted_videos():
 
 posted_videos = load_posted_videos()
 
+
 # === SAFE DISCORD POSTING ===
 def safe_post_to_discord(webhook, payload, keyword):
     """Send a message to Discord while respecting rate limits."""
     try:
         response = requests.post(webhook, json=payload, timeout=10)
 
-        # Normal success
+        # Normal success (200 or 204 depending on webhook mode)
         if response.status_code in (200, 204):
             print(f"✅ [{datetime.utcnow()}] Sent to Discord: {keyword}")
-            return
+            return True
 
         # Handle rate limiting
         if response.status_code == 429:
@@ -77,17 +78,27 @@ def safe_post_to_discord(webhook, payload, keyword):
                 time.sleep(float(retry_after))
             except ValueError:
                 time.sleep(2)
-            requests.post(webhook, json=payload, timeout=10)
-            return
 
+            retry_response = requests.post(webhook, json=payload, timeout=10)
+            if retry_response.status_code in (200, 204):
+                print(f"✅ Retry succeeded for {keyword}")
+                return True
+            print(f"⚠️ Retry failed: {retry_response.status_code}")
+            return False
+
+        # Webhook deleted
         if response.status_code == 404:
             print(f"❌ [{datetime.utcnow()}] Webhook deleted or invalid for {keyword}")
-            return
+            return False
 
         print(f"⚠️ [{datetime.utcnow()}] Discord returned {response.status_code}: {response.text[:80]}")
+        return False
 
     except Exception as e:
         print(f"💥 Error posting to Discord ({keyword}): {e}")
+        return False
+
+
 
 # === YOUTUBE SUBSCRIPTION ===
 def subscribe_to_youtube():
@@ -97,9 +108,11 @@ def subscribe_to_youtube():
         return
 
     callback = f"{PUBLIC_URL}/youtube-webhook"
+
     for ch in CHANNELS:
         topic = f"https://www.youtube.com/xml/feeds/videos.xml?channel_id={ch}"
         print(f"📡 Subscribing to {ch}")
+
         try:
             r = requests.post(HUB_URL, data={
                 "hub.mode": "subscribe",
@@ -107,12 +120,15 @@ def subscribe_to_youtube():
                 "hub.callback": callback,
                 "hub.verify": "async"
             }, timeout=10)
+
             if r.status_code in [202, 204]:
                 print(f"✅ Subscription accepted for {ch}")
             else:
                 print(f"⚠️ Subscription failed ({r.status_code}): {r.text}")
+
         except Exception as e:
             print(f"❌ Error subscribing {ch}: {e}")
+
 
 def auto_renew_subscriptions():
     """Re-subscribe every 30 days."""
@@ -121,23 +137,28 @@ def auto_renew_subscriptions():
         print("⏰ Next re-subscription in 30 days...")
         time.sleep(30 * 24 * 3600)
 
+
 # === FLASK ROUTES ===
 @app.route("/")
 def health():
     return "✅ VSPEED YouTube → Discord Running (Scheduled Stream Mode)"
 
+
+
 @app.route("/youtube-webhook", methods=["GET", "POST"])
 def youtube_webhook():
-    # Verification handshake from YouTube
+
+    # === CALLBACK VERIFICATION ===
     if request.method == "GET":
         challenge = request.args.get("hub.challenge", "")
-        print(f"🔗 YouTube verification: {challenge}")
+        print(f"🔗 YouTube verification received: {challenge}")
         return Response(challenge, 200)
 
-    # Notification from YouTube
+    # === PUBSUB NOTIFICATION ===
     elif request.method == "POST":
         if not request.data:
             return "No data", 400
+
         try:
             root = ET.fromstring(request.data)
             ns = {
@@ -146,41 +167,55 @@ def youtube_webhook():
             }
 
             for entry in root.findall("atom:entry", ns):
+
+                # --- Extract video ID ---
                 video_id_tag = entry.find("yt:videoId", ns)
                 if video_id_tag is None:
                     continue
 
                 video_id = video_id_tag.text.strip()
+
+                # --- Extract title ---
                 title_tag = entry.find("atom:title", ns)
                 title = title_tag.text if title_tag is not None else "Untitled Stream"
+
+                # Build URLs
                 url = f"https://www.youtube.com/watch?v={video_id}"
                 thumb = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
 
-                # Skip if already posted
-                if video_id in posted_videos:
-                    continue
+                # --- FIX APPLIED ---
+                # DO NOT save video_id yet — only after a keyword match
 
-                posted_videos.add(video_id)
-                save_posted_videos()
+                print(f"🎥 [{datetime.utcnow()}] Incoming candidate: {title}")
 
-                print(f"🎥 [{datetime.utcnow()}] Scheduled stream detected: {title}")
+                matched = False
 
-                # Match keywords to webhooks
                 for keyword, webhook in WEBHOOK_MAP.items():
                     if keyword in title.upper():
+
+                        matched = True
+
                         embed = {
                             "title": title,
                             "url": url,
                             "color": 0x1E90FF,
                             "image": {"url": thumb}
                         }
+
                         payload = {
                             "username": "VSPEED 🎬 Broadcast Link",
                             "avatar_url": "https://www.svgrepo.com/show/355037/youtube.svg",
                             "embeds": [embed]
                         }
+
                         safe_post_to_discord(webhook, payload, keyword)
                         time.sleep(1)
+
+                # Save only AFTER a match
+                if matched:
+                    posted_videos.add(video_id)
+                    save_posted_videos()
+                    print(f"💾 Saved video ID {video_id} after keyword match")
 
             return "OK", 200
 
@@ -188,9 +223,10 @@ def youtube_webhook():
             print(f"⚠️ Error parsing notification: {e}")
             return "Error", 500
 
+
+
 # === ENTRY POINT ===
 if __name__ == "__main__":
     threading.Thread(target=auto_renew_subscriptions, daemon=True).start()
-    # Force unbuffered output so logs appear live in Render
     os.environ["PYTHONUNBUFFERED"] = "1"
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
