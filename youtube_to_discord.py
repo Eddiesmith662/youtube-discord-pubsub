@@ -182,9 +182,16 @@ def youtube_webhook():
 
                 video_id = video_id_tag.text.strip()
 
+                # --- SKIP IF ALREADY POSTED ---
+                if video_id in posted_videos:
+                    print(f"⏩ [{datetime.utcnow()}] Already processed {video_id}, skipping.")
+                    continue
+
+
                 # --- Extract title ---
                 title_tag = entry.find("atom:title", ns)
                 title = title_tag.text if title_tag is not None else "Untitled Stream"
+                title_upper = title.upper()
 
                 # Build URLs
                 url = f"https://www.youtube.com/watch?v={video_id}"
