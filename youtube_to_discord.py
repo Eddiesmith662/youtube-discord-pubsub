@@ -7,6 +7,13 @@ import xml.etree.ElementTree as ET
 import json
 from datetime import datetime
 
+import sys
+import logging
+
+logging.basicConfig(level=logging.INFO)
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
+
 app = Flask(__name__)
 
 # === CONFIGURATION ===
