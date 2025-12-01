@@ -28,7 +28,6 @@ MAX_FILE_SIZE_BYTES = 1_000_000  # 1MB
 # Channels to monitor
 CHANNELS = [
     "UCb9eK6mcBZmGPWl1UJ2wemA",
-    "UCme1x5ySvBB8lGYsHpR4b6Q",
 ]
 
 # Keywords → Discord webhooks
